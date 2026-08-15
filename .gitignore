@@ -8,7 +8,6 @@ venv/
 env/
 myenv/
 .venv/
-chatbot/
 
 # Conda
 .conda/
