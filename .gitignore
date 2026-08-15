@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+venv/
+env/
+myenv/
+.venv/
+chatbot/
+
+# Conda
+.conda/
+
+# Environment variables / secrets
+.env
+.env.*
+!.env.example
+
+# Streamlit
+.streamlit/secrets.toml
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+*.jsonl
+
+# Python cache
+.pytest_cache/
+.mypy_cache/
+
+# Temporary files
+*.tmp
+*.temp
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Local data
+*.sqlite
+*.db
