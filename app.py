@@ -1,4 +1,3 @@
-from chatbot.response_generator import generate_response
 # ============================================================
 # AI KNOWLEDGE ASSISTANT
 # APPLICATION ENTRY POINT
@@ -51,16 +50,14 @@ import uuid
 # ============================================================
 
 import streamlit as st
-
 from dotenv import load_dotenv
-
 
 # ============================================================
 # 3. APPLICATION IMPORTS
 # ============================================================
 
 from ui.streamlit_app import render_application
-
+from chatbot.response_generator import generate_response
 from rag.retriever import get_retriever
 
 
@@ -77,9 +74,7 @@ from rag.retriever import get_retriever
 #   etc.
 #
 # ============================================================
-
 load_dotenv()
-
 
 # ============================================================
 # 5. STREAMLIT PAGE CONFIGURATION
@@ -88,17 +83,12 @@ load_dotenv()
 # This must be executed before other Streamlit UI commands.
 #
 # ============================================================
-
 st.set_page_config(
-
     page_title=(
         "Intelligent Knowledge Assistant"
     ),
-
     page_icon="🤖",
-
     layout="wide",
-
     initial_sidebar_state="expanded"
 )
 
@@ -119,7 +109,6 @@ st.set_page_config(
 
 MAX_HISTORY_MESSAGES = 6
 
-
 # ============================================================
 # 7. SESSION STATE INITIALIZATION
 # ============================================================
@@ -127,24 +116,22 @@ MAX_HISTORY_MESSAGES = 6
 def initialize_session_state():
     """
     Initialize application-level Streamlit session state.
-
     Streamlit reruns the Python script on user interaction,
     therefore values that need to survive reruns must be stored
     in st.session_state.
     """
-
     # --------------------------------------------------------
     # Authentication
     # --------------------------------------------------------
 
-    if "logged_in" not in st.session_state:
+    # if "logged_in" not in st.session_state:
 
-        st.session_state.logged_in = False
+    #     st.session_state.logged_in = False
 
 
-    if "user_id" not in st.session_state:
+    # if "user_id" not in st.session_state:
 
-        st.session_state.user_id = None
+    #     st.session_state.user_id = None
 
 
     # --------------------------------------------------------
@@ -164,6 +151,8 @@ def initialize_session_state():
     # This same session_id is used by the JSON logger.
     #
     # --------------------------------------------------------
+    if "user_id" not in st.session_state:
+        st.session_state.user_id = "streamlit_user"
 
     if "session_id" not in st.session_state:
 

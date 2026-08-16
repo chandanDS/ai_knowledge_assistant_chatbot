@@ -551,9 +551,9 @@ def render_sidebar(
         )
 
 
-        st.caption(
-            f"User: {user_id}"
-        )
+        # st.caption(
+        #     f"User: {user_id}"
+        # )
 
 
         if session_id:

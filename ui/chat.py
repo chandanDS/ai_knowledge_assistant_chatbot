@@ -150,129 +150,65 @@ def render_welcome():
 # ============================================================
 
 def render_header():
+    """
+    Render the chatbot header.
 
-    col1, col2, col3 = st.columns(
-        [8, 2, 1]
+    User identity, session ID and logout controls are
+    intentionally hidden from the UI.
+
+    user_id and session_id remain in session state
+    for backend logging.
+    """
+
+    st.title(
+        "🤖 Intelligent Knowledge Assistant"
     )
 
-
-    with col1:
-
-        st.title(
-            "🤖 Intelligent Knowledge Assistant"
-        )
-
-        st.caption(
-            "Ask any question and the assistant will "
-            "automatically select the appropriate "
-            "knowledge source."
-        )
-
-
-    with col2:
-
-        user_id = (
-            st.session_state.get(
-                "user_id",
-                "Unknown"
-            )
-        )
-
-        st.markdown(
-            f"👤 **{user_id}**"
-        )
-
-
-        session_id = (
-            st.session_state.get(
-                "session_id"
-            )
-        )
-
-
-        if session_id:
-
-            st.caption(
-                "Session: "
-                f"{session_id[:8]}..."
-            )
-
-
-    with col3:
-
-        if st.button(
-            "Logout",
-            key="top_logout",
-            use_container_width=True
-        ):
-
-            from ui.login import logout
-
-            logout()
-
-
+    st.caption(
+        "Ask any question and the assistant will "
+        "automatically select the appropriate "
+        "knowledge source."
+    )
 # ============================================================
 # TOKEN USAGE UPDATE
 # ============================================================
 
 def update_token_usage(
+        router_tokens,
+        final_tokens,
+        total_usage
+        ):
+        
+        router_tokens = router_tokens or {}
+        final_tokens = final_tokens or {}
+        total_usage = total_usage or {}
+        st.session_state.token_usage["router"] = (
+            router_tokens.get("total_tokens", 0)
+    )
 
-    router_tokens,
+        st.session_state.token_usage["final_llm"] = (
+            final_tokens.get("total_tokens", 0)
+    )
 
-    final_tokens,
+        st.session_state.token_usage["total"] = (
+            total_usage.get("total_tokens", 0)
+    )
 
-    total_usage
+        st.session_state.token_usage["router_input"] = (
+            router_tokens.get("input_tokens", 0)
+    )
 
-):
-    """
-    Store latest token usage in Streamlit session state.
-    """
+        st.session_state.token_usage["router_output"] = (
+            router_tokens.get("output_tokens", 0)
+    )
 
-    st.session_state.token_usage = {
+        st.session_state.token_usage["final_input"] = (
+            final_tokens.get("input_tokens", 0)
+    )
 
-        "router":
-            router_tokens.get(
-                "total_tokens",
-                0
-            ),
-
-        "final_llm":
-            final_tokens.get(
-                "total_tokens",
-                0
-            ),
-
-        "total":
-            total_usage.get(
-                "total_tokens",
-                0
-            ),
-
-        "router_input":
-            router_tokens.get(
-                "input_tokens",
-                0
-            ),
-
-        "router_output":
-            router_tokens.get(
-                "output_tokens",
-                0
-            ),
-
-        "final_input":
-            final_tokens.get(
-                "input_tokens",
-                0
-            ),
-
-        "final_output":
-            final_tokens.get(
-                "output_tokens",
-                0
-            )
-    }
-
+        st.session_state.token_usage["final_output"] = (
+            final_tokens.get("output_tokens", 0)
+    )
 
 # ============================================================
 # SAVE CHAT HISTORY
@@ -441,23 +377,28 @@ def save_interaction_log(
             f"interaction log: {exc}"
         )
 
-
+def select_followup(question):
+    st.session_state.selected_question = question
 # ============================================================
 # PROCESS QUESTION
 # ============================================================
 
+def select_followup(question):
+    """
+    Store the selected follow-up question.
+
+    The question will be picked up by render_chat()
+    and processed exactly like a typed question.
+    """
+    st.session_state.selected_question = question
+
+
 def process_question(
-
     question,
-
     llm,
-
     temperature,
-
     retriever,
-
     max_history_messages
-
 ):
     """
     Process one user question.
@@ -468,28 +409,18 @@ def process_question(
     # ========================================================
 
     with st.chat_message(
-
         "user",
-
         avatar="👤"
-
     ):
-
-        st.markdown(
-            question
-        )
-
+        st.markdown(question)
 
     # ========================================================
     # AI RESPONSE
     # ========================================================
 
     with st.chat_message(
-
         "assistant",
-
         avatar="🤖"
-
     ):
 
         with st.spinner(
@@ -500,21 +431,13 @@ def process_question(
 
                 (
                     response,
-
                     follow_up_questions,
-
                     route,
-
                     docs,
-
                     router_tokens,
-
                     final_tokens,
-
                     total_usage,
-
                     latency
-
                 ) = generate_response(
 
                     question=question,
@@ -534,7 +457,6 @@ def process_question(
                     )
                 )
 
-
             except Exception as exc:
 
                 st.error(
@@ -542,28 +464,37 @@ def process_question(
                     "process your question."
                 )
 
-                st.exception(
-                    exc
-                )
+                st.exception(exc)
 
                 return
-
 
         # ----------------------------------------------------
         # DISPLAY RESPONSE
         # ----------------------------------------------------
 
-        st.markdown(
-            response
-        )
+        st.markdown(response)
 
+    # ========================================================
+    # NORMALIZE TOKEN DATA
+    # ========================================================
+
+    router_tokens = (
+        router_tokens or {}
+    )
+
+    final_tokens = (
+        final_tokens or {}
+    )
+
+    total_usage = (
+        total_usage or {}
+    )
 
     # ========================================================
     # UPDATE ROUTE
     # ========================================================
 
     st.session_state.route = route
-
 
     # ========================================================
     # UPDATE TOKEN USAGE
@@ -579,7 +510,6 @@ def process_question(
 
     )
 
-
     # ========================================================
     # SAVE CONVERSATION
     # ========================================================
@@ -593,7 +523,6 @@ def process_question(
         max_history_messages
 
     )
-
 
     # ========================================================
     # SAVE JSON LOG
@@ -621,7 +550,6 @@ def process_question(
 
     )
 
-
     # ========================================================
     # FOLLOW-UP QUESTIONS
     # ========================================================
@@ -632,12 +560,11 @@ def process_question(
             "### 💡 Suggested follow-up questions"
         )
 
-
         for i, follow_up in enumerate(
             follow_up_questions
         ):
 
-            if st.button(
+            st.button(
 
                 f"👉 {follow_up}",
 
@@ -647,16 +574,13 @@ def process_question(
                     f"{i}"
                 ),
 
-                use_container_width=True
+                use_container_width=True,
 
-            ):
+                on_click=select_followup,
 
-                st.session_state.selected_question = (
-                    follow_up
-                )
+                args=(follow_up,)
 
-                st.rerun()
-
+            )
 
 # ============================================================
 # MAIN CHAT INTERFACE

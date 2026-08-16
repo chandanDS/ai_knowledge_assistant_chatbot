@@ -25,9 +25,9 @@
 import streamlit as st
 
 
-from ui.login import (
-    render_login
-)
+# from ui.login import (
+#     render_login
+# )
 
 
 from ui.sidebar import (
@@ -161,12 +161,12 @@ def render_application(
     # AUTHENTICATION CHECK
     # ========================================================
 
-    if not st.session_state.get(
-        "logged_in",
-        False
-    ):
+    # if not st.session_state.get(
+    #     "logged_in",
+    #     False
+    # ):
 
-        render_login()
+    #     render_login()
 
         # ----------------------------------------------------
         # IMPORTANT
@@ -175,35 +175,35 @@ def render_application(
         # authenticated.
         # ----------------------------------------------------
 
-        st.stop()
+        #st.stop()
 
 
     # ========================================================
     # SAFETY CHECK
     # ========================================================
 
-    if not st.session_state.get(
-        "user_id"
-    ):
+    # if not st.session_state.get(
+    #     "user_id"
+    # ):
 
-        st.error(
-            "User session is invalid. "
-            "Please log in again."
-        )
+    #     st.error(
+    #         "User session is invalid. "
+    #         "Please log in again."
+    #     )
 
-        st.stop()
+    #     st.stop()
 
 
-    if not st.session_state.get(
-        "session_id"
-    ):
+    # if not st.session_state.get(
+    #     "session_id"
+    # ):
 
-        st.error(
-            "Conversation session is invalid. "
-            "Please log in again."
-        )
+    #     st.error(
+    #         "Conversation session is invalid. "
+    #         "Please log in again."
+    #     )
 
-        st.stop()
+    #     st.stop()
 
 
     # ========================================================
