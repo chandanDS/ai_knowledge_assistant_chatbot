@@ -1,47 +1,47 @@
+from chatbot.prompts import FINAL_PROMPT
+from web.web_search import search_web
+
+
 """
 ============================================================
 CHATBOT RESPONSE GENERATOR
 ============================================================
 
-Central orchestration layer for the chatbot.
-
-Flow
-----
-User Question
-      |
-      +--> Router
-      |
-      +--> RAG_KNOWLEDGE
-      |       |
-      |       +--> Query Expansion
-      |       +--> Similarity Search
-      |       +--> Context Builder
-      |
-      +--> WEB_SEARCH
-      |       |
-      |       +--> Web Search
-      |
-      +--> GENERAL_LLM
-      |
-      +--> Final LLM
-      |
-      +--> Structured Response
-
 Responsibilities
 ----------------
-1. Identify user intent
-2. Route the request
-3. Expand RAG queries
-4. Retrieve relevant documents
-5. Build RAG context
-6. Perform web search when required
-7. Maintain conversation history
-8. Call final LLM
-9. Track token usage
-10. Calculate latency
+1. Identify the user's intent/route
+2. Retrieve RAG documents when required
+3. Perform web search when required
+4. Maintain only the latest N conversation messages
+5. Call the final LLM
+6. Generate structured response + follow-up questions
+7. Track router and final LLM token usage
+8. Calculate total latency
 
-This module contains chatbot orchestration only.
-It does not contain Streamlit UI code.
+Routes
+------
+RAG_KNOWLEDGE
+    -> FAISS / Retriever
+    -> Final LLM
+
+WEB_SEARCH
+    -> Tavily
+    -> Final LLM
+
+GENERAL_LLM
+    -> Final LLM directly
+
+Important
+---------
+This module does NOT contain Streamlit UI code.
+
+The UI layer (app.py) is responsible for:
+- displaying the answer
+- displaying follow-up questions
+- updating Streamlit session state
+- writing logs
+
+This module only handles chatbot processing.
 ============================================================
 """
 
@@ -84,12 +84,10 @@ from langchain_core.messages import (
 # ============================================================
 
 from chatbot.router import identify_route
-from chatbot.schemas import ChatResponse
-from chatbot.prompts import FINAL_PROMPT
 
-from rag.query_expansion import expand_query
-from rag.retriever import similarity_search
-from rag.context_builder import build_context
+from chatbot.schemas import ChatResponse
+
+from chatbot.prompts import FINAL_PROMPT
 
 from web.web_search import search_web
 
@@ -99,8 +97,6 @@ from web.web_search import search_web
 # ============================================================
 
 DEFAULT_MAX_HISTORY_MESSAGES = 6
-
-DEFAULT_TEMPERATURE = 0
 
 
 # ============================================================
@@ -114,20 +110,42 @@ def get_recent_history(
     """
     Return only the most recent conversation messages.
 
-    Limiting history reduces final LLM input tokens.
+    Example
+    -------
+    If max_messages = 6 and the session contains:
+
+        user
+        assistant
+        user
+        assistant
+        user
+        assistant
+        user
+        assistant
+
+    only the latest 6 messages are returned.
+
+    This helps control LLM input token consumption.
     """
 
-    if not messages or max_messages <= 0:
+    if not messages:
+        return []
+
+    if max_messages <= 0:
         return []
 
     return messages[-max_messages:]
 
 
+# ============================================================
+# CONVERT STREAMLIT HISTORY TO LANGCHAIN MESSAGES
+# ============================================================
+
 def convert_to_langchain_messages(
     recent_history: list[dict[str, Any]]
 ) -> list:
     """
-    Convert application conversation history into
+    Convert Streamlit session messages into
     LangChain HumanMessage / AIMessage objects.
     """
 
@@ -136,7 +154,11 @@ def convert_to_langchain_messages(
     for message in recent_history:
 
         role = message.get("role")
-        content = message.get("content", "")
+
+        content = message.get(
+            "content",
+            ""
+        )
 
         if not content:
             continue
@@ -144,27 +166,92 @@ def convert_to_langchain_messages(
         if role == "user":
 
             messages.append(
-                HumanMessage(content=content)
+                HumanMessage(
+                    content=content
+                )
             )
 
         elif role == "assistant":
 
             messages.append(
-                AIMessage(content=content)
+                AIMessage(
+                    content=content
+                )
             )
 
     return messages
 
 
 # ============================================================
-# TOKEN USAGE
+# RAG RETRIEVAL
+# ============================================================
+
+def retrieve_context(
+    question: str,
+    retriever
+) -> tuple[str, list]:
+    """
+    Retrieve relevant documents from the configured
+    vector store.
+
+    Returns
+    -------
+    context:
+        Combined text from retrieved documents.
+
+    docs:
+        Original retrieved document objects.
+    """
+
+    if retriever is None:
+
+        print(
+            "WARNING: Retriever is not available."
+        )
+
+        return "", []
+
+    try:
+
+        docs = retriever.invoke(
+            question
+        )
+
+    except Exception as exc:
+
+        print(
+            f"ERROR: RAG retrieval failed: {exc}"
+        )
+
+        return "", []
+
+    if not docs:
+
+        return "", []
+
+    context = "\n\n".join(
+        doc.page_content
+        for doc in docs
+        if getattr(
+            doc,
+            "page_content",
+            None
+        )
+    )
+
+    return context, docs
+
+
+# ============================================================
+# TOKEN USAGE EXTRACTION
 # ============================================================
 
 def extract_usage(
     usage: Any
 ) -> dict[str, int]:
     """
-    Normalize LangChain usage metadata.
+    Normalize LangChain UsageMetadataCallbackHandler
+    output into a simple dictionary.
 
     Returns
     -------
@@ -182,13 +269,29 @@ def extract_usage(
     }
 
     if not usage:
+
         return empty_usage
 
     try:
 
-        if isinstance(usage, dict):
+        # LangChain callback normally returns:
 
-            # Direct usage format
+        # {
+        #     "gpt-4o": {
+        #         "input_tokens": ...,
+        #         "output_tokens": ...,
+        #         "total_tokens": ...
+        #     }
+        # }
+
+        if isinstance(
+            usage,
+            dict
+        ):
+
+            # Case 1:
+            # Usage is directly token metadata
+
             if (
                 "input_tokens" in usage
                 or "output_tokens" in usage
@@ -202,12 +305,14 @@ def extract_usage(
                             0
                         )
                     ),
+
                     "output_tokens": int(
                         usage.get(
                             "output_tokens",
                             0
                         )
                     ),
+
                     "total_tokens": int(
                         usage.get(
                             "total_tokens",
@@ -216,11 +321,15 @@ def extract_usage(
                     )
                 }
 
-            # Nested model usage
+            # Case 2:
+            # Usage is nested under model name
+
             if usage:
 
                 model_usage = next(
-                    iter(usage.values())
+                    iter(
+                        usage.values()
+                    )
                 )
 
                 if isinstance(
@@ -235,12 +344,14 @@ def extract_usage(
                                 0
                             )
                         ),
+
                         "output_tokens": int(
                             model_usage.get(
                                 "output_tokens",
                                 0
                             )
                         ),
+
                         "total_tokens": int(
                             model_usage.get(
                                 "total_tokens",
@@ -252,96 +363,10 @@ def extract_usage(
     except Exception as exc:
 
         print(
-            f"WARNING: Unable to extract "
-            f"token usage: {exc}"
+            f"WARNING: Unable to extract token usage: {exc}"
         )
 
     return empty_usage
-
-
-# ============================================================
-# RAG PROCESSING
-# ============================================================
-
-def retrieve_rag_context(
-    question: str
-):
-    """
-    Execute the complete RAG retrieval pipeline.
-
-    Flow
-    ----
-    Question
-        ↓
-    Query Expansion
-        ↓
-    Similarity Search
-        ↓
-    Context Builder
-
-    Returns
-    -------
-    expanded_query:
-        Optimized search query.
-
-    context:
-        LLM-ready context.
-
-    docs:
-        Retrieved documents with scores.
-    """
-
-    print("-" * 60)
-    print("RAG QUERY EXPANSION")
-
-    # --------------------------------------------------------
-    # 1. Query Expansion
-    # --------------------------------------------------------
-
-    expanded_query = expand_query(
-        question
-    )
-
-    print(
-        "EXPANDED QUERY:",
-        expanded_query
-    )
-
-    # --------------------------------------------------------
-    # 2. Similarity Search
-    # --------------------------------------------------------
-
-    print(
-        "PERFORMING SIMILARITY SEARCH..."
-    )
-
-    results = similarity_search(
-        expanded_query
-    )
-
-    print(
-        "RETRIEVED DOCUMENTS:",
-        len(results)
-    )
-
-    # --------------------------------------------------------
-    # 3. Build Context
-    # --------------------------------------------------------
-
-    context = build_context(
-        results
-    )
-
-    print(
-        "CONTEXT LENGTH:",
-        len(context)
-    )
-
-    return (
-        expanded_query,
-        context,
-        results
-    )
 
 
 # ============================================================
@@ -356,13 +381,15 @@ def generate_final_response(
     web_context: str
 ):
     """
-    Generate final structured chatbot response.
+    Invoke the final structured-output LLM.
 
-    The final LLM receives:
-        - conversation history
-        - original user question
-        - RAG context
-        - web context
+    Returns
+    -------
+    result:
+        ChatResponse object.
+
+    usage:
+        Raw LangChain usage metadata.
     """
 
     structured_model = (
@@ -379,7 +406,7 @@ def generate_final_response(
     final_usage_callback = (
         UsageMetadataCallbackHandler()
     )
-
+    web_results = search_web(question)
     result = chain.invoke(
         {
             "history": history,
@@ -410,10 +437,10 @@ def generate_final_response(
 
 def generate_response(
     question: str,
-    llm: str,
+    llm,
     temperature: float,
     chat_history: list[dict[str, Any]],
-    retriever=None,
+    retriever,
     max_messages: int = DEFAULT_MAX_HISTORY_MESSAGES
 ):
     """
@@ -422,29 +449,30 @@ def generate_response(
     Parameters
     ----------
     question:
-        User's current question.
+        Current user question.
 
     llm:
-        OpenAI model name.
+        LLM model name, for example:
+        "gpt-4o"
 
     temperature:
         LLM temperature.
 
     chat_history:
-        Previous conversation messages.
+        Full conversation history stored in
+        st.session_state.messages.
 
     retriever:
-        Retained for backward compatibility.
-        The new RAG pipeline uses similarity_search()
-        directly.
+        FAISS/vector-store retriever.
 
     max_messages:
-        Number of previous messages sent to final LLM.
+        Maximum number of previous messages sent
+        to the final LLM.
 
     Returns
     -------
     (
-        answer,
+        response,
         follow_up_questions,
         route,
         docs,
@@ -463,7 +491,7 @@ def generate_response(
 
 
     # ========================================================
-    # INITIALIZE
+    # INITIALIZE VARIABLES
     # ========================================================
 
     context = ""
@@ -478,7 +506,7 @@ def generate_response(
 
 
     # ========================================================
-    # API KEY
+    # OPENAI API KEY
     # ========================================================
 
     openai_api_key = os.getenv(
@@ -504,7 +532,8 @@ def generate_response(
 
 
     # ========================================================
-    # STEP 1: ROUTER
+    # STEP 1
+    # IDENTIFY USER INTENT
     # ========================================================
 
     print("=" * 60)
@@ -530,37 +559,27 @@ def generate_response(
 
 
     # ========================================================
-    # STEP 2: ROUTE PROCESSING
+    # STEP 2
+    # ROUTE-SPECIFIC PROCESSING
     # ========================================================
 
     if route == "RAG_KNOWLEDGE":
+
+        # ----------------------------------------------------
+        # RAG ROUTE
+        # ----------------------------------------------------
 
         print(
             "RAG ROUTE SELECTED"
         )
 
-        try:
-
-            (
-                expanded_query,
-                context,
-                docs
-            ) = retrieve_rag_context(
-                question
-            )
-
-        except Exception as exc:
-
-            print(
-                f"ERROR: RAG pipeline failed: {exc}"
-            )
-
-            expanded_query = question
-            context = ""
-            docs = []
+        context, docs = retrieve_context(
+            question,
+            retriever
+        )
 
         print(
-            "RAG PIPELINE COMPLETED"
+            "RAG RETRIEVER INVOKED"
         )
 
         print(
@@ -570,6 +589,10 @@ def generate_response(
 
 
     elif route == "WEB_SEARCH":
+
+        # ----------------------------------------------------
+        # WEB SEARCH ROUTE
+        # ----------------------------------------------------
 
         print(
             "WEB SEARCH ROUTE SELECTED"
@@ -603,16 +626,35 @@ def generate_response(
 
     elif route == "GENERAL_LLM":
 
+        # ----------------------------------------------------
+        # GENERAL LLM ROUTE
+        # ----------------------------------------------------
+
         print(
             "GENERAL LLM ROUTE SELECTED"
         )
 
+        # No RAG retrieval.
+        # No web search.
+
         context = ""
-        web_context = ""
+        web_results = search_web(question)
+        web_context = "\n\n".join(
+            [
+                result.get("content", "")
+                for result in web_results
+                if isinstance(result, dict)
+                ]
+        )
+
         docs = []
 
 
     else:
+
+        # ----------------------------------------------------
+        # SAFETY FALLBACK
+        # ----------------------------------------------------
 
         print(
             "UNKNOWN ROUTE:",
@@ -622,18 +664,22 @@ def generate_response(
         route = "GENERAL_LLM"
 
         context = ""
+
         web_context = ""
+
         docs = []
 
 
     # ========================================================
-    # STEP 3: CONVERSATION HISTORY
+    # STEP 3
+    # LIMIT CONVERSATION HISTORY
     # ========================================================
 
     recent_history = get_recent_history(
         chat_history,
         max_messages=max_messages
     )
+
 
     print(
         "TOTAL STORED MESSAGES:",
@@ -647,7 +693,8 @@ def generate_response(
 
 
     # ========================================================
-    # STEP 4: LANGCHAIN HISTORY
+    # STEP 4
+    # CONVERT HISTORY TO LANGCHAIN FORMAT
     # ========================================================
 
     history_messages = (
@@ -658,7 +705,8 @@ def generate_response(
 
 
     # ========================================================
-    # STEP 5: FINAL LLM
+    # STEP 5
+    # FINAL LLM CALL
     # ========================================================
 
     print(
@@ -681,7 +729,8 @@ def generate_response(
 
 
     # ========================================================
-    # STEP 6: TOKEN USAGE
+    # STEP 6
+    # EXTRACT TOKEN USAGE
     # ========================================================
 
     router_tokens = extract_usage(
@@ -694,36 +743,45 @@ def generate_response(
 
 
     # ========================================================
-    # STEP 7: TOTAL TOKEN USAGE
+    # STEP 7
+    # TOTAL TOKEN CALCULATION
     # ========================================================
+
+    total_input_tokens = (
+        router_tokens["input_tokens"]
+        +
+        final_tokens["input_tokens"]
+    )
+
+    total_output_tokens = (
+        router_tokens["output_tokens"]
+        +
+        final_tokens["output_tokens"]
+    )
+
+    total_tokens = (
+        router_tokens["total_tokens"]
+        +
+        final_tokens["total_tokens"]
+    )
+
 
     total_usage = {
 
         "input_tokens":
-            (
-                router_tokens["input_tokens"]
-                +
-                final_tokens["input_tokens"]
-            ),
+            total_input_tokens,
 
         "output_tokens":
-            (
-                router_tokens["output_tokens"]
-                +
-                final_tokens["output_tokens"]
-            ),
+            total_output_tokens,
 
         "total_tokens":
-            (
-                router_tokens["total_tokens"]
-                +
-                final_tokens["total_tokens"]
-            )
+            total_tokens
     }
 
 
     # ========================================================
-    # STEP 8: LATENCY
+    # STEP 8
+    # LATENCY
     # ========================================================
 
     latency = (
@@ -734,24 +792,54 @@ def generate_response(
 
 
     # ========================================================
-    # MONITORING
+    # DEBUG / MONITORING
     # ========================================================
 
-    print("-" * 60)
+    print("=" * 60)
 
     print(
-        "ROUTER TOKENS:",
-        router_tokens
+        "ROUTER INPUT TOKENS:",
+        router_tokens["input_tokens"]
     )
 
     print(
-        "FINAL TOKENS:",
-        final_tokens
+        "ROUTER OUTPUT TOKENS:",
+        router_tokens["output_tokens"]
+    )
+
+    print(
+        "ROUTER TOTAL TOKENS:",
+        router_tokens["total_tokens"]
+    )
+
+    print(
+        "FINAL INPUT TOKENS:",
+        final_tokens["input_tokens"]
+    )
+
+    print(
+        "FINAL OUTPUT TOKENS:",
+        final_tokens["output_tokens"]
+    )
+
+    print(
+        "FINAL TOTAL TOKENS:",
+        final_tokens["total_tokens"]
+    )
+
+    print(
+        "TOTAL INPUT TOKENS:",
+        total_usage["input_tokens"]
+    )
+
+    print(
+        "TOTAL OUTPUT TOKENS:",
+        total_usage["output_tokens"]
     )
 
     print(
         "TOTAL TOKENS:",
-        total_usage
+        total_usage["total_tokens"]
     )
 
     print(
@@ -767,7 +855,8 @@ def generate_response(
 
 
     # ========================================================
-    # RETURN
+    # STEP 9
+    # RETURN RESPONSE
     # ========================================================
 
     return (
