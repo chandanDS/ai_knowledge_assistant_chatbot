@@ -1,33 +1,46 @@
 """
-External web search service.
+External web-search service.
 
 Currently powered by Tavily.
 """
+
 import os
+from functools import lru_cache
+
 from dotenv import load_dotenv
-from langchain_community.tools.tavily_search import TavilySearchResults
+from langchain_community.tools.tavily_search import (
+    TavilySearchResults,
+)
+
+
 load_dotenv()
 
 
-# =========================================================
-# CHECK API KEY
-# =========================================================
+@lru_cache(maxsize=1)
+def get_web_search_tool() -> TavilySearchResults:
+    """
+    Create the Tavily tool only when web search is used.
 
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+    This keeps unrelated modules and automated tests
+    importable when no Tavily credential is configured.
+    """
 
-from langchain_community.tools.tavily_search import (
-    TavilySearchResults
-)
+    tavily_api_key = os.getenv("TAVILY_API_KEY")
 
+    if not tavily_api_key:
+        raise ValueError(
+            "TAVILY_API_KEY not found. "
+            "Please add TAVILY_API_KEY to your .env file."
+        )
 
-web_search_tool = TavilySearchResults(
-    max_results=5
-)
+    return TavilySearchResults(
+        max_results=5
+    )
 
 
 def search_web(question: str) -> str:
-
     try:
+        web_search_tool = get_web_search_tool()
 
         results = web_search_tool.invoke(
             {
@@ -42,9 +55,8 @@ def search_web(question: str) -> str:
 
         for index, result in enumerate(
             results,
-            start=1
+            start=1,
         ):
-
             formatted_results.append(
                 f"""
 SOURCE {index}
@@ -60,12 +72,7 @@ URL:
 """
             )
 
-        return "\n".join(
-            formatted_results
-        )
+        return "\n".join(formatted_results)
 
     except Exception as exc:
-
-        return (
-            f"Web search failed: {exc}"
-        )
+        return f"Web search failed: {exc}"
