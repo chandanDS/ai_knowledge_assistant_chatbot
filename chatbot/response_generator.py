@@ -1,7 +1,3 @@
-from chatbot.prompts import FINAL_PROMPT
-from web.web_search import search_web
-
-
 """
 ============================================================
 CHATBOT RESPONSE GENERATOR
@@ -51,6 +47,8 @@ This module only handles chatbot processing.
 
 import os
 import time
+import logging
+import uuid
 from typing import Any
 
 
@@ -89,7 +87,34 @@ from chatbot.schemas import ChatResponse
 
 from chatbot.prompts import FINAL_PROMPT
 
+from chatbot.cache_service import (
+    cached_rag_invoke,
+    cached_web_search,
+)
+
+from chatbot.cost_optimizer import (
+    deduplicate_documents,
+    estimate_request_cost,
+    fit_history_to_budget,
+    fit_text_to_budget,
+)
+
 from web.web_search import search_web
+
+from security.audit import log_security_event
+from security.guardrails import guardrails
+
+from config.model_routing import (
+    ModelRoutingConfig,
+    select_final_model,
+)
+
+from config.cost_optimization import CostOptimizationConfig
+
+from logging_service.operational_logger import (
+    fingerprint_text,
+    log_event,
+)
 
 
 # ============================================================
@@ -188,7 +213,8 @@ def convert_to_langchain_messages(
 
 def retrieve_context(
     question: str,
-    retriever
+    retriever,
+    event_logger=None,
 ) -> tuple[str, list]:
     """
     Retrieve relevant documents from the configured
@@ -213,15 +239,23 @@ def retrieve_context(
 
     try:
 
-        docs = retriever.invoke(
-            question
-        )
+        docs, cache_hit = cached_rag_invoke(question, retriever)
+        print("RAG CACHE:", "HIT" if cache_hit else "MISS")
+        if event_logger:
+            event_logger("rag_cache_result", cache_hit=cache_hit)
 
     except Exception as exc:
 
         print(
             f"ERROR: RAG retrieval failed: {exc}"
         )
+        if event_logger:
+            event_logger(
+                "rag_retrieval_failed",
+                level=logging.ERROR,
+                exc_info=True,
+                error_type=type(exc).__name__,
+            )
 
         return "", []
 
@@ -229,15 +263,48 @@ def retrieve_context(
 
         return "", []
 
-    context = "\n\n".join(
-        doc.page_content
-        for doc in docs
-        if getattr(
-            doc,
-            "page_content",
-            None
+    docs, duplicates_removed = deduplicate_documents(docs)
+    if duplicates_removed:
+        print("RAG DEDUPLICATION: removed", duplicates_removed, "duplicate chunk(s)")
+    if event_logger:
+        event_logger(
+            "rag_retrieval_completed",
+            documents=len(docs),
+            duplicate_chunks_removed=duplicates_removed,
         )
-    )
+
+    safe_chunks = []
+
+    for index, doc in enumerate(docs, start=1):
+        content = getattr(doc, "page_content", "")
+        sanitization = guardrails.sanitize_context(content)
+
+        if sanitization.action != "ALLOW":
+            print(
+                "RAG SECURITY FILTER:",
+                f"{sanitization.reason} "
+                f"from document {index}; categories="
+                f"{','.join(sanitization.categories)}"
+            )
+            log_security_event(
+                stage="RAG_CONTEXT",
+                action=sanitization.action,
+                categories=sanitization.categories,
+                risk_score=sanitization.risk_score,
+                content=content,
+            )
+            if event_logger:
+                event_logger(
+                    "rag_context_sanitized",
+                    document_index=index,
+                    action=sanitization.action,
+                    categories=sanitization.categories,
+                )
+
+        if sanitization.safe_text:
+            safe_chunks.append(sanitization.safe_text)
+
+    context = "\n\n".join(safe_chunks)
 
     return context, docs
 
@@ -406,7 +473,6 @@ def generate_final_response(
     final_usage_callback = (
         UsageMetadataCallbackHandler()
     )
-    web_results = search_web(question)
     result = chain.invoke(
         {
             "history": history,
@@ -441,7 +507,9 @@ def generate_response(
     temperature: float,
     chat_history: list[dict[str, Any]],
     retriever,
-    max_messages: int = DEFAULT_MAX_HISTORY_MESSAGES
+    max_messages: int = DEFAULT_MAX_HISTORY_MESSAGES,
+    security_principal: str = "anonymous",
+    request_id: str | None = None,
 ):
     """
     Main chatbot orchestration function.
@@ -489,6 +557,33 @@ def generate_response(
 
     start_time = time.time()
 
+    request_id = request_id or str(uuid.uuid4())
+    session_fingerprint = fingerprint_text(security_principal)
+
+    def operational_event(
+        event: str,
+        *,
+        level: int = logging.INFO,
+        exc_info: bool = False,
+        **fields,
+    ):
+        log_event(
+            event,
+            level=level,
+            exc_info=exc_info,
+            request_id=request_id,
+            session_fingerprint=session_fingerprint,
+            **fields,
+        )
+
+    operational_event(
+        "request_received",
+        question_length=len(question or ""),
+        question_fingerprint=fingerprint_text(question),
+        requested_model=llm,
+        history_messages=len(chat_history or []),
+    )
+
 
     # ========================================================
     # INITIALIZE VARIABLES
@@ -503,6 +598,94 @@ def generate_response(
     router_usage = {}
 
     final_usage = {}
+
+    cost_config = CostOptimizationConfig.from_env()
+
+    # Reject direct prompt injection before creating a model client.  A
+    # blocked request therefore consumes no API tokens and needs no API key.
+    print("=" * 60)
+
+    print("QUESTION:", question)
+    print("CHECKING PROMPT INJECTION...")
+
+    security_result = guardrails.inspect_input(question)
+
+    operational_event(
+        "input_guardrail_evaluated",
+        allowed=security_result.allowed,
+        action=security_result.action,
+        categories=security_result.categories,
+        risk_score=security_result.risk_score,
+    )
+
+    print("PROMPT INJECTION:", not security_result.allowed)
+    print("PROMPT RISK SCORE:", security_result.risk_score)
+    print("PROMPT SECURITY CATEGORY:", "+".join(security_result.categories))
+
+    if not security_result.allowed:
+        print("INPUT GUARDRAIL BLOCKED REQUEST")
+        log_security_event(
+            stage="INPUT",
+            action=security_result.action,
+            categories=security_result.categories,
+            risk_score=security_result.risk_score,
+            content=question,
+        )
+        operational_event(
+            "request_blocked_by_input_guardrail",
+            level=logging.WARNING,
+            categories=security_result.categories,
+            latency_seconds=round(time.time() - start_time, 4),
+        )
+        zero_tokens = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+        }
+        return (
+            security_result.safe_text,
+            [],
+            "BLOCKED_PROMPT_INJECTION",
+            [],
+            zero_tokens.copy(),
+            zero_tokens.copy(),
+            zero_tokens.copy(),
+            time.time() - start_time,
+        )
+
+    question = security_result.safe_text
+
+    rate_decision = guardrails.inspect_rate_limit(security_principal)
+    operational_event(
+        "rate_limit_evaluated",
+        allowed=rate_decision.allowed,
+        categories=rate_decision.categories,
+    )
+    if not rate_decision.allowed:
+        print("RATE LIMIT GUARDRAIL BLOCKED REQUEST")
+        log_security_event(
+            stage="RATE_LIMIT",
+            action=rate_decision.action,
+            categories=rate_decision.categories,
+            risk_score=rate_decision.risk_score,
+            content=security_principal,
+        )
+        operational_event(
+            "request_blocked_by_rate_limit",
+            level=logging.WARNING,
+            latency_seconds=round(time.time() - start_time, 4),
+        )
+        zero_tokens = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        return (
+            rate_decision.safe_text,
+            [],
+            "BLOCKED_RATE_LIMIT",
+            [],
+            zero_tokens.copy(),
+            zero_tokens.copy(),
+            zero_tokens.copy(),
+            time.time() - start_time,
+        )
 
 
     # ========================================================
@@ -521,13 +704,16 @@ def generate_response(
 
 
     # ========================================================
-    # CREATE LLM
+    # CREATE ECONOMICAL INTENT-ROUTER MODEL
     # ========================================================
 
-    model = ChatOpenAI(
-        model=llm,
-        temperature=temperature,
-        api_key=openai_api_key
+    model_routing_config = ModelRoutingConfig.from_env()
+
+    router_model = ChatOpenAI(
+        model=model_routing_config.router_model,
+        temperature=0,
+        api_key=openai_api_key,
+        max_tokens=cost_config.router_max_output_tokens,
     )
 
 
@@ -536,26 +722,32 @@ def generate_response(
     # IDENTIFY USER INTENT
     # ========================================================
 
-    print("=" * 60)
-
-    print(
-        "QUESTION:",
-        question
-    )
-
     print(
         "IDENTIFYING ROUTE..."
     )
-
-    route, router_usage = identify_route(
-        question,
-        model
+    operational_event(
+        "intent_routing_started",
+        router_model=model_routing_config.router_model,
     )
+    try:
+        route, router_usage = identify_route(
+            question,
+            router_model
+        )
+    except Exception as exc:
+        operational_event(
+            "intent_routing_failed",
+            level=logging.ERROR,
+            exc_info=True,
+            error_type=type(exc).__name__,
+        )
+        raise
 
     print(
         "DETECTED ROUTE:",
         route
     )
+    operational_event("intent_route_selected", route=route)
 
 
     # ========================================================
@@ -575,17 +767,20 @@ def generate_response(
 
         context, docs = retrieve_context(
             question,
-            retriever
+            retriever,
+            event_logger=operational_event,
         )
 
-        print(
-            "RAG RETRIEVER INVOKED"
-        )
+        for i, doc in enumerate(docs):
+            print(
+                f"\n--- RETRIEVED DOCUMENT {i + 1} ---"
+                )
+            print(
+                doc.page_content
+                )
 
-        print(
-            "DOCUMENTS RETRIEVED:",
-            len(docs)
-        )
+        print("RAG RETRIEVER INVOKED")
+        print("DOCUMENTS RETRIEVED:", len(docs))
 
 
     elif route == "WEB_SEARCH":
@@ -600,14 +795,36 @@ def generate_response(
 
         try:
 
-            web_context = search_web(
-                question
+            operational_event("web_search_started")
+            raw_web_context, cache_hit = cached_web_search(question, search_web)
+            print("WEB CACHE:", "HIT" if cache_hit else "MISS")
+            web_decision = guardrails.sanitize_context(raw_web_context)
+            web_context = web_decision.safe_text
+            if web_decision.action != "ALLOW":
+                log_security_event(
+                    stage="WEB_CONTEXT",
+                    action=web_decision.action,
+                    categories=web_decision.categories,
+                    risk_score=web_decision.risk_score,
+                    content=raw_web_context,
+                )
+            operational_event(
+                "web_search_completed",
+                cache_hit=cache_hit,
+                result_chars=len(raw_web_context),
+                sanitized=web_decision.action != "ALLOW",
             )
 
         except Exception as exc:
 
             print(
                 f"WEB SEARCH ERROR: {exc}"
+            )
+            operational_event(
+                "web_search_failed",
+                level=logging.ERROR,
+                exc_info=True,
+                error_type=type(exc).__name__,
             )
 
             web_context = (
@@ -638,14 +855,10 @@ def generate_response(
         # No web search.
 
         context = ""
-        web_results = search_web(question)
-        web_context = "\n\n".join(
-            [
-                result.get("content", "")
-                for result in web_results
-                if isinstance(result, dict)
-                ]
-        )
+        web_context = ""
+
+        print("COST OPTIMIZATION: skipped web search for GENERAL_LLM route")
+        operational_event("web_search_skipped", reason="general_llm_route")
 
         docs = []
 
@@ -659,6 +872,11 @@ def generate_response(
         print(
             "UNKNOWN ROUTE:",
             route
+        )
+        operational_event(
+            "unknown_route_fallback",
+            level=logging.WARNING,
+            returned_route=route,
         )
 
         route = "GENERAL_LLM"
@@ -678,6 +896,61 @@ def generate_response(
     recent_history = get_recent_history(
         chat_history,
         max_messages=max_messages
+    )
+    recent_history = guardrails.sanitize_history(recent_history)
+
+    context_budget = fit_text_to_budget(context, cost_config.rag_token_budget)
+    web_budget = fit_text_to_budget(web_context, cost_config.web_token_budget)
+    recent_history, history_budget = fit_history_to_budget(
+        recent_history,
+        cost_config.history_token_budget,
+    )
+    context = context_budget.text
+    web_context = web_budget.text
+
+    print(
+        "COST TOKEN BUDGETS:",
+        f"history={history_budget['tokens_after']}/{cost_config.history_token_budget},",
+        f"rag={context_budget.estimated_tokens_after}/{cost_config.rag_token_budget},",
+        f"web={web_budget.estimated_tokens_after}/{cost_config.web_token_budget}",
+    )
+    operational_event(
+        "token_budgets_applied",
+        history_tokens_before=history_budget["tokens_before"],
+        history_tokens_after=history_budget["tokens_after"],
+        rag_tokens_before=context_budget.estimated_tokens_before,
+        rag_tokens_after=context_budget.estimated_tokens_after,
+        web_tokens_before=web_budget.estimated_tokens_before,
+        web_tokens_after=web_budget.estimated_tokens_after,
+    )
+
+    model_decision = select_final_model(
+        requested_model=llm,
+        route=route,
+        question=question,
+        history_message_count=len(recent_history),
+        context_chars=len(context) + len(web_context),
+        config=model_routing_config,
+    )
+
+    print("MODEL ROUTING MODE:", "AUTOMATIC" if model_decision.automatic else "MANUAL")
+    print("MODEL ROUTING TIER:", model_decision.tier)
+    print("SELECTED FINAL MODEL:", model_decision.selected_model)
+    print("MODEL ROUTING REASON:", model_decision.reason)
+    operational_event(
+        "final_model_selected",
+        selected_model=model_decision.selected_model,
+        tier=model_decision.tier,
+        automatic=model_decision.automatic,
+        complexity_score=model_decision.complexity_score,
+        reason=model_decision.reason,
+    )
+
+    model = ChatOpenAI(
+        model=model_decision.selected_model,
+        temperature=temperature,
+        api_key=openai_api_key,
+        max_tokens=cost_config.final_max_output_tokens,
     )
 
 
@@ -712,20 +985,68 @@ def generate_response(
     print(
         "CALLING FINAL LLM..."
     )
-
-    result, final_usage = (
-        generate_final_response(
+    operational_event(
+        "final_llm_started",
+        model=model_decision.selected_model,
+        history_messages=len(history_messages),
+        context_chars=len(context),
+        web_context_chars=len(web_context),
+    )
+    llm_start_time = time.time()
+    try:
+        result, final_usage = generate_final_response(
             llm=model,
             question=question,
             history=history_messages,
             context=context,
             web_context=web_context
         )
-    )
+    except Exception as exc:
+        operational_event(
+            "final_llm_failed",
+            level=logging.ERROR,
+            exc_info=True,
+            model=model_decision.selected_model,
+            error_type=type(exc).__name__,
+            llm_latency_seconds=round(time.time() - llm_start_time, 4),
+        )
+        raise
 
     print(
         "FINAL LLM RESPONSE GENERATED"
     )
+    operational_event(
+        "final_llm_completed",
+        model=model_decision.selected_model,
+        llm_latency_seconds=round(time.time() - llm_start_time, 4),
+    )
+
+    output_decision = guardrails.inspect_output(result.answer)
+    safe_answer = output_decision.safe_text
+    safe_follow_up_questions = [
+        guardrails.inspect_output(question).safe_text
+        for question in result.follow_up_questions
+    ]
+
+    if output_decision.action != "ALLOW":
+        print(
+            "OUTPUT GUARDRAIL:",
+            output_decision.action,
+            "+".join(output_decision.categories),
+        )
+        log_security_event(
+            stage="OUTPUT",
+            action=output_decision.action,
+            categories=output_decision.categories,
+            risk_score=output_decision.risk_score,
+            content=result.answer,
+        )
+        operational_event(
+            "output_guardrail_activated",
+            level=logging.WARNING,
+            action=output_decision.action,
+            categories=output_decision.categories,
+        )
 
 
     # ========================================================
@@ -775,8 +1096,46 @@ def generate_response(
             total_output_tokens,
 
         "total_tokens":
-            total_tokens
+            total_tokens,
+
+        "selected_model":
+            model_decision.selected_model,
+
+        "model_routing_tier":
+            model_decision.tier,
+
+        "model_routing_reason":
+            model_decision.reason,
+
+        "model_routing_automatic":
+            model_decision.automatic,
+
+        "history_tokens_before_budget":
+            history_budget["tokens_before"],
+
+        "history_tokens_after_budget":
+            history_budget["tokens_after"],
+
+        "rag_tokens_before_budget":
+            context_budget.estimated_tokens_before,
+
+        "rag_tokens_after_budget":
+            context_budget.estimated_tokens_after,
+
+        "web_tokens_before_budget":
+            web_budget.estimated_tokens_before,
+
+        "web_tokens_after_budget":
+            web_budget.estimated_tokens_after
     }
+
+    cost_estimate = estimate_request_cost(
+        router_model=model_routing_config.router_model,
+        router_tokens=router_tokens,
+        final_model=model_decision.selected_model,
+        final_tokens=final_tokens,
+    )
+    total_usage.update(cost_estimate)
 
 
     # ========================================================
@@ -843,12 +1202,29 @@ def generate_response(
     )
 
     print(
+        "ESTIMATED REQUEST COST (USD):",
+        total_usage.get("estimated_cost_usd", "unavailable")
+    )
+
+    print(
         "LATENCY:",
         round(
             latency,
             3
         ),
         "seconds"
+    )
+
+    operational_event(
+        "request_completed",
+        route=route,
+        selected_model=model_decision.selected_model,
+        documents_retrieved=len(docs),
+        router_tokens=router_tokens["total_tokens"],
+        final_tokens=final_tokens["total_tokens"],
+        total_tokens=total_usage["total_tokens"],
+        estimated_cost_usd=total_usage.get("estimated_cost_usd"),
+        latency_seconds=round(latency, 4),
     )
 
     print("=" * 60)
@@ -860,8 +1236,8 @@ def generate_response(
     # ========================================================
 
     return (
-        result.answer,
-        result.follow_up_questions,
+        safe_answer,
+        safe_follow_up_questions,
         route,
         docs,
         router_tokens,

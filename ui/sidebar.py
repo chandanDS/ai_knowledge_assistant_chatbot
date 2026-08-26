@@ -15,6 +15,8 @@
 
 import streamlit as st
 
+from ui.login import logout
+
 
 # ============================================================
 # CSS
@@ -295,6 +297,7 @@ def render_sidebar(
             "🤖 OpenAI Model",
 
             [
+                "Automatic",
                 "gpt-4o",
                 "gpt-4-turbo",
                 "gpt-4"
@@ -302,6 +305,11 @@ def render_sidebar(
 
             index=0
         )
+
+        if llm == "Automatic":
+            st.caption(
+                "Automatically balances response quality, latency, and cost."
+            )
 
 
         # ----------------------------------------------------
@@ -374,6 +382,10 @@ def render_sidebar(
                 "GENERAL_LLM"
             )
 
+            st.session_state.selected_model = (
+                "Not selected yet"
+            )
+
             st.session_state.selected_question = (
                 None
             )
@@ -395,6 +407,9 @@ def render_sidebar(
                 "final_output": 0
             }
 
+            st.session_state.last_estimated_cost_usd = 0.0
+            st.session_state.total_estimated_cost_usd = 0.0
+
             st.rerun()
 
 
@@ -412,6 +427,13 @@ def render_sidebar(
         route = (
             st.session_state.route
         )
+
+        selected_model = st.session_state.get(
+            "selected_model",
+            "Not selected yet"
+        )
+
+        st.caption(f"Final model: {selected_model}")
 
 
         if route == "RAG_KNOWLEDGE":
@@ -494,6 +516,16 @@ def render_sidebar(
             )
         )
 
+        st.metric(
+            "Estimated session cost",
+            f"${st.session_state.get('total_estimated_cost_usd', 0.0):.6f}"
+        )
+
+        st.caption(
+            "Last request estimate: "
+            f"${st.session_state.get('last_estimated_cost_usd', 0.0):.6f}"
+        )
+
 
         # ----------------------------------------------------
         # TOKEN DETAILS
@@ -551,9 +583,7 @@ def render_sidebar(
         )
 
 
-        # st.caption(
-        #     f"User: {user_id}"
-        # )
+        st.caption(f"Signed in as: {user_id}")
 
 
         if session_id:
@@ -562,4 +592,11 @@ def render_sidebar(
                 "Session: "
                 f"{session_id[:12]}..."
             )
+
+        if st.button(
+            "↪️ Sign out",
+            use_container_width=True,
+            key="logout",
+        ):
+            logout()
     return llm, temperature

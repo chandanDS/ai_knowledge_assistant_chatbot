@@ -14,6 +14,9 @@
 #
 # ============================================================
 
+import logging
+import uuid
+
 import streamlit as st
 
 
@@ -24,6 +27,11 @@ from chatbot.response_generator import (
 
 from logging_service.json_logger import (
     log_interaction_json
+)
+
+from logging_service.operational_logger import (
+    fingerprint_text,
+    log_event,
 )
 
 
@@ -323,7 +331,10 @@ def save_interaction_log(
 
             route=route,
 
-            model=llm,
+            model=total_usage.get(
+                "selected_model",
+                llm
+            ),
 
             response=response,
 
@@ -366,7 +377,40 @@ def save_interaction_log(
                 )
             ),
 
-            latency_seconds=latency
+            latency_seconds=latency,
+
+            model_routing_tier=total_usage.get(
+                "model_routing_tier"
+            ),
+
+            model_routing_reason=total_usage.get(
+                "model_routing_reason"
+            ),
+
+            model_routing_automatic=total_usage.get(
+                "model_routing_automatic"
+            ),
+
+            estimated_cost_usd=total_usage.get(
+                "estimated_cost_usd"
+            ),
+
+            cost_estimate_available=total_usage.get(
+                "cost_estimate_available",
+                False
+            ),
+
+            history_tokens_after_budget=total_usage.get(
+                "history_tokens_after_budget"
+            ),
+
+            rag_tokens_after_budget=total_usage.get(
+                "rag_tokens_after_budget"
+            ),
+
+            web_tokens_after_budget=total_usage.get(
+                "web_tokens_after_budget"
+            )
         )
 
 
@@ -403,6 +447,13 @@ def process_question(
     """
     Process one user question.
     """
+
+    request_id = str(uuid.uuid4())
+    security_principal = str(
+        st.session_state.get("session_id")
+        or st.session_state.get("user_id")
+        or "anonymous"
+    )
 
     # ========================================================
     # USER MESSAGE
@@ -453,11 +504,24 @@ def process_question(
                     retriever=retriever,
 
                     max_messages=(
-                        max_history_messages
-                    )
+                    max_history_messages
+                    ),
+
+                    security_principal=security_principal,
+
+                    request_id=request_id
                 )
 
             except Exception as exc:
+
+                log_event(
+                    "ui_request_failed",
+                    level=logging.ERROR,
+                    exc_info=True,
+                    request_id=request_id,
+                    session_fingerprint=fingerprint_text(security_principal),
+                    error_type=type(exc).__name__,
+                )
 
                 st.error(
                     "Sorry, I was unable to "
@@ -495,6 +559,19 @@ def process_question(
     # ========================================================
 
     st.session_state.route = route
+
+    st.session_state.selected_model = total_usage.get(
+        "selected_model",
+        llm
+    )
+
+    request_cost = total_usage.get("estimated_cost_usd")
+    if request_cost is not None:
+        st.session_state.last_estimated_cost_usd = float(request_cost)
+        st.session_state.total_estimated_cost_usd = (
+            st.session_state.get("total_estimated_cost_usd", 0.0)
+            + float(request_cost)
+        )
 
     # ========================================================
     # UPDATE TOKEN USAGE

@@ -1,96 +1,23 @@
+"""Small authentication helpers for the learning application.
+
+The credentials are intentionally hardcoded for this local demo. A real
+application should use password hashes and an external identity provider.
 """
-Authentication and session management.
-"""
 
-import uuid
-#import streamlit as st
+import hmac
 
-
-# ============================================================
-# DEVELOPMENT USERS
-# ============================================================
 
 USERS = {
     "chandan": "1234",
     "admin": "admin123",
-    "testuser": "test123"
+    "testuser": "test123",
 }
-#st.secrets["users"]
-
-# ============================================================
-# LOGIN
-# ============================================================
-
-# def login() -> None:
-
-#     st.title("🔐 AI Assistant")
-
-#     st.write(
-#         "Please sign in to continue."
-#     )
-
-#     username = st.text_input(
-#         "Username"
-#     )
-
-#     password = st.text_input(
-#         "Password",
-#         type="password"
-#     )
-
-#     if st.button(
-#         "🚀 Login",
-#         use_container_width=True
-#     ):
-
-#         if (
-#             username in USERS
-#             and USERS[username] == password
-#         ):
-
-#             st.session_state.logged_in = True
-
-#             st.session_state.user_id = username
-
-#             st.session_state.session_id = str(
-#                 uuid.uuid4()
-#             )
-
-#             st.session_state.messages = []
-
-#             st.rerun()
-
-#         else:
-
-#             st.error(
-#                 "Invalid username or password."
-#             )
 
 
-# # ============================================================
-# # LOGOUT
-# # ============================================================
-
-# def logout() -> None:
-#     """
-#     Clear the current authenticated session.
-#     """
-
-#     st.session_state.logged_in = False
-
-#     st.session_state.pop(
-#         "user_id",
-#         None
-#     )
-
-#     st.session_state.pop(
-#         "session_id",
-#         None
-#     )
-
-#     st.session_state.pop(
-#         "messages",
-#         None
-#     )
-
-    # st.rerun()
+def authenticate_credentials(username: str, password: str) -> bool:
+    """Return True only when the supplied demo credentials match."""
+    normalized_username = (username or "").strip()
+    expected_password = USERS.get(normalized_username)
+    if expected_password is None:
+        return False
+    return hmac.compare_digest(expected_password, password or "")

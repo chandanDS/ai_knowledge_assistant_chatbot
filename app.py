@@ -57,6 +57,7 @@ from dotenv import load_dotenv
 # ============================================================
 
 from ui.streamlit_app import render_application
+from ui.login import render_login
 from chatbot.response_generator import generate_response
 from rag.retriever import get_retriever
 
@@ -124,9 +125,9 @@ def initialize_session_state():
     # Authentication
     # --------------------------------------------------------
 
-    # if "logged_in" not in st.session_state:
+    if "logged_in" not in st.session_state:
 
-    #     st.session_state.logged_in = False
+        st.session_state.logged_in = False
 
 
     # if "user_id" not in st.session_state:
@@ -152,7 +153,7 @@ def initialize_session_state():
     #
     # --------------------------------------------------------
     if "user_id" not in st.session_state:
-        st.session_state.user_id = "streamlit_user"
+        st.session_state.user_id = None
 
     if "session_id" not in st.session_state:
 
@@ -178,6 +179,9 @@ def initialize_session_state():
             "GENERAL_LLM"
         )
 
+    if "selected_model" not in st.session_state:
+        st.session_state.selected_model = "Not selected yet"
+
 
     # --------------------------------------------------------
     # Token usage
@@ -202,6 +206,12 @@ def initialize_session_state():
             "final_output": 0
         }
 
+    if "last_estimated_cost_usd" not in st.session_state:
+        st.session_state.last_estimated_cost_usd = 0.0
+
+    if "total_estimated_cost_usd" not in st.session_state:
+        st.session_state.total_estimated_cost_usd = 0.0
+
 
 # ============================================================
 # 8. INITIALIZE SESSION STATE
@@ -211,7 +221,16 @@ initialize_session_state()
 
 
 # ============================================================
-# 9. LOAD SHARED RESOURCES
+# 9. AUTHENTICATION GATE
+# ============================================================
+
+if not st.session_state.logged_in:
+    render_login()
+    st.stop()
+
+
+# ============================================================
+# 10. LOAD SHARED RESOURCES
 # ============================================================
 #
 # The FAISS/vector-store retriever is a shared resource.
@@ -228,14 +247,14 @@ def load_retriever():
 
 
 # ============================================================
-# 10. LOAD RETRIEVER
+# 11. LOAD RETRIEVER
 # ============================================================
 
 retriever = load_retriever()
 
 
 # ============================================================
-# 11. START STREAMLIT APPLICATION
+# 12. START STREAMLIT APPLICATION
 # ============================================================
 #
 # All actual UI rendering happens inside:
