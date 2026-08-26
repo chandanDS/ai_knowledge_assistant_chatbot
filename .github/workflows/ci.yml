@@ -1,0 +1,43 @@
+name: Chatbot CI
+
+on:
+  push:
+    branches:
+      - prompt-injection-protection
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: chatbot-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Run automated tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run automated tests
+        env:
+          OPENAI_API_KEY: ""
+          TAVILY_API_KEY: ""
+        run: python -m pytest tests -q
