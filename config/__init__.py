@@ -1,1 +1,1 @@
-from .llm_config import get_llm
+"""Application configuration package."""
