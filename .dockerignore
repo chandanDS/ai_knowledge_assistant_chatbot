@@ -1,0 +1,49 @@
+# Git
+.git
+.github
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+myenv/
+.conda/
+
+# Secrets
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Runtime logs and local data
+logs/
+*.log
+*.jsonl
+data/chatbot_logs.json
+
+# Tests and development utilities
+tests/
+test.txt
+debug_logs_app.py
+evaluation/reports/
+
+# Local source documents are not required when
+# the prebuilt FAISS index is included
+documents/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
