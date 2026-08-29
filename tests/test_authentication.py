@@ -1,6 +1,9 @@
 import pytest
 
-from auth.authentication import authenticate_credentials
+from auth.authentication import (
+    authenticate_credentials,
+    streamlit_login_enabled,
+)
 
 
 @pytest.mark.parametrize(
@@ -27,3 +30,23 @@ def test_authenticate_credentials_accepts_valid_demo_users(username, password):
 )
 def test_authenticate_credentials_rejects_invalid_values(username, password):
     assert authenticate_credentials(username, password) is False
+
+
+def test_streamlit_login_is_enabled_by_default(monkeypatch):
+    monkeypatch.delenv("STREAMLIT_LOGIN_ENABLED", raising=False)
+
+    assert streamlit_login_enabled() is True
+
+
+@pytest.mark.parametrize("value", ["false", "FALSE", "0", "no", "off"])
+def test_streamlit_login_can_be_disabled(monkeypatch, value):
+    monkeypatch.setenv("STREAMLIT_LOGIN_ENABLED", value)
+
+    assert streamlit_login_enabled() is False
+
+
+@pytest.mark.parametrize("value", ["true", "1", "yes", "on"])
+def test_streamlit_login_can_be_enabled(monkeypatch, value):
+    monkeypatch.setenv("STREAMLIT_LOGIN_ENABLED", value)
+
+    assert streamlit_login_enabled() is True

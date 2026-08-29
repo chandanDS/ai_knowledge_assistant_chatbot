@@ -1,0 +1,44 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PORT=8080 \
+    STREAMLIT_SERVER_HEADLESS=true \
+    STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+
+WORKDIR /app
+
+COPY requirements-streamlit.txt .
+
+RUN python -m pip install --upgrade pip \
+    && python -m pip install -r requirements-streamlit.txt
+
+RUN groupadd --system chatbot \
+    && useradd \
+        --system \
+        --gid chatbot \
+        --create-home \
+        chatbot
+
+COPY --chown=chatbot:chatbot app.py .
+COPY --chown=chatbot:chatbot ui ./ui
+COPY --chown=chatbot:chatbot auth ./auth
+COPY --chown=chatbot:chatbot config ./config
+COPY --chown=chatbot:chatbot logging_service ./logging_service
+
+RUN mkdir -p /app/logs \
+    && chown -R chatbot:chatbot /app/logs
+
+USER chatbot
+
+EXPOSE 8080
+
+HEALTHCHECK \
+    --interval=30s \
+    --timeout=5s \
+    --start-period=30s \
+    --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/_stcore/health', timeout=5)" || exit 1
+
+CMD ["python", "-m", "streamlit", "run", "app.py", "--server.address=0.0.0.0", "--server.port=8080", "--server.headless=true"]

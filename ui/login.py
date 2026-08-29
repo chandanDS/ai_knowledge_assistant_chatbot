@@ -11,7 +11,9 @@ from logging_service.operational_logger import fingerprint_text, log_event
 
 def _reset_conversation_state() -> None:
     """Start a clean conversation while retaining authentication state."""
+
     st.session_state.session_id = str(uuid.uuid4())
+    st.session_state.conversation_id = None
     st.session_state.messages = []
     st.session_state.route = "GENERAL_LLM"
     st.session_state.selected_model = "Not selected yet"

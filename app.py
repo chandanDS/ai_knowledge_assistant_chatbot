@@ -56,10 +56,9 @@ from dotenv import load_dotenv
 # 3. APPLICATION IMPORTS
 # ============================================================
 
+from auth.authentication import streamlit_login_enabled
 from ui.streamlit_app import render_application
 from ui.login import render_login
-from chatbot.response_generator import generate_response
-from rag.retriever import get_retriever
 
 
 # ============================================================
@@ -128,6 +127,9 @@ def initialize_session_state():
     if "logged_in" not in st.session_state:
 
         st.session_state.logged_in = False
+
+    if "conversation_id" not in st.session_state:
+        st.session_state.conversation_id = None
 
 
     # if "user_id" not in st.session_state:
@@ -224,7 +226,18 @@ initialize_session_state()
 # 9. AUTHENTICATION GATE
 # ============================================================
 
-if not st.session_state.logged_in:
+LOGIN_ENABLED = streamlit_login_enabled()
+
+if not LOGIN_ENABLED:
+    if not st.session_state.session_id:
+        st.session_state.session_id = str(uuid.uuid4())
+
+    st.session_state.logged_in = True
+    st.session_state.user_id = (
+        f"public-{st.session_state.session_id}"
+    )
+
+elif not st.session_state.logged_in:
     render_login()
     st.stop()
 
@@ -240,17 +253,17 @@ if not st.session_state.logged_in:
 #
 # ============================================================
 
-@st.cache_resource
-def load_retriever():
+# @st.cache_resource
+# def load_retriever():
 
-    return get_retriever()
+#     return get_retriever()
 
 
 # ============================================================
 # 11. LOAD RETRIEVER
 # ============================================================
 
-retriever = load_retriever()
+#retriever = load_retriever()
 
 
 # ============================================================
@@ -266,9 +279,6 @@ retriever = load_retriever()
 # ============================================================
 
 render_application(
-
-    retriever=retriever,
-
     max_history_messages=(
         MAX_HISTORY_MESSAGES
     )

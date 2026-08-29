@@ -131,11 +131,7 @@ def render_footer():
 # ============================================================
 
 def render_application(
-
-    retriever,
-
-    max_history_messages=6
-
+    max_history_messages=6,
 ):
     """
     Main Streamlit UI entry point.
@@ -224,13 +220,8 @@ def render_application(
     # ========================================================
 
     render_chat(
-
         llm=llm,
-
         temperature=temperature,
-
-        retriever=retriever,
-
         max_history_messages=(
             max_history_messages
         )

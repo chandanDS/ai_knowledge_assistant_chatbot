@@ -5,6 +5,7 @@ application should use password hashes and an external identity provider.
 """
 
 import hmac
+import os
 
 
 USERS = {
@@ -12,6 +13,21 @@ USERS = {
     "admin": "admin123",
     "testuser": "test123",
 }
+
+
+def streamlit_login_enabled() -> bool:
+    """Return whether the demo Streamlit login page is enabled."""
+    value = os.getenv(
+        "STREAMLIT_LOGIN_ENABLED",
+        "true",
+    ).strip().lower()
+
+    return value not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
 
 
 def authenticate_credentials(username: str, password: str) -> bool:

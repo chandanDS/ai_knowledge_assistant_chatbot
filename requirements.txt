@@ -26,5 +26,6 @@ scikit-learn==1.9.0
 fastapi
 uvicorn[standard]
 httpx
+google-auth
 Brotli>=1.2.0
 pytest

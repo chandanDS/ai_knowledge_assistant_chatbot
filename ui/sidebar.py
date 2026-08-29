@@ -15,6 +15,7 @@
 
 import streamlit as st
 
+from auth.authentication import streamlit_login_enabled
 from ui.login import logout
 
 
@@ -299,8 +300,7 @@ def render_sidebar(
             [
                 "Automatic",
                 "gpt-4o",
-                "gpt-4-turbo",
-                "gpt-4"
+                "gpt-4o-mini"
             ],
 
             index=0
@@ -377,6 +377,7 @@ def render_sidebar(
         ):
 
             st.session_state.messages = []
+            st.session_state.conversation_id = None
 
             st.session_state.route = (
                 "GENERAL_LLM"
@@ -583,7 +584,12 @@ def render_sidebar(
         )
 
 
-        st.caption(f"Signed in as: {user_id}")
+        login_enabled = streamlit_login_enabled()
+
+        if login_enabled:
+            st.caption(f"Signed in as: {user_id}")
+        else:
+            st.caption("Public access enabled")
 
 
         if session_id:
@@ -593,10 +599,11 @@ def render_sidebar(
                 f"{session_id[:12]}..."
             )
 
-        if st.button(
-            "↪️ Sign out",
-            use_container_width=True,
-            key="logout",
-        ):
-            logout()
+        if login_enabled:
+            if st.button(
+                "↪️ Sign out",
+                use_container_width=True,
+                key="logout",
+            ):
+                logout()
     return llm, temperature

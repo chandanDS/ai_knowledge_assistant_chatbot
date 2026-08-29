@@ -1,0 +1,5 @@
+streamlit==1.61.1
+python-dotenv==1.2.2
+httpx
+google-auth
+requests
